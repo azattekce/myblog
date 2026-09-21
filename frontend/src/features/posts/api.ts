@@ -29,8 +29,10 @@ export const postsApi = {
     publish: (id: string) => http.post(`/posts/admin/posts/${id}/publish`),
     unpublish: (id: string) => http.post(`/posts/admin/posts/${id}/unpublish`),
     remove: (id: string) => http.delete(`/posts/admin/posts/${id}`),
-    createCategory: (name: string, description: string) =>
-      http.post<{ id: string }>('/posts/admin/categories', { name, description }).then((r) => r.data),
+    createCategory: (name: string, description: string, imageUrl?: string | null) =>
+      http
+        .post<{ id: string }>('/posts/admin/categories', { name, description, image_url: imageUrl || null })
+        .then((r) => r.data),
     removeCategory: (id: string) => http.delete(`/posts/admin/categories/${id}`),
   },
 };

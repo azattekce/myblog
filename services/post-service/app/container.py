@@ -6,7 +6,6 @@ from app.application.commands.handlers import PostCommandHandler
 from app.application.integration_handlers import CommentEventsHandler
 from app.application.queries.handlers import PostQueryHandler
 from app.core.config import Settings
-from app.domain.post import Category
 from app.infrastructure.persistence.models import Base, OutboxMessage
 from app.infrastructure.persistence.read_model import SqlAlchemyPostReadModel
 from app.infrastructure.persistence.unit_of_work import SqlAlchemyPostUnitOfWork
@@ -17,20 +16,6 @@ from devblog_common.persistence import OutboxRelay, build_engine, build_session_
 from devblog_common.web import JwtVerifier
 
 COMMENT_EVENTS_QUEUE = "post-service.comment-events"
-
-# LinkedIn'den otomatik foto çekilemediği için geçici bir avatar kullanılıyor;
-# gerçek fotoğraf elde edildiğinde kategori güncellenerek değiştirilebilir.
-ATEK_CATEGORY_NAME = "Atek"
-ATEK_PLACEHOLDER_IMAGE_URL = "https://ui-avatars.com/api/?name=Atek&background=0D6EFD&color=fff&size=256&bold=true"
-
-
-def _seed_atek_category(session_factory) -> None:
-    with SqlAlchemyPostUnitOfWork(session_factory) as uow:
-        category = Category.create(ATEK_CATEGORY_NAME, image_url=ATEK_PLACEHOLDER_IMAGE_URL)
-        if uow.categories.slug_exists(category.slug):
-            return
-        uow.categories.add(category)
-        uow.commit()
 
 
 @dataclass
@@ -50,7 +35,6 @@ def build_container(settings: Settings, redis_client=None) -> Container:
     engine = build_engine(settings)
     Base.metadata.create_all(engine)
     sf = build_session_factory(engine)
-    _seed_atek_category(sf)
     redis_client = redis_client or create_redis(settings.redis_url)
     cache = RedisCache(redis_client, prefix="cache:post-service")
 

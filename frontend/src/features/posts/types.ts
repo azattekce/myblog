@@ -33,6 +33,7 @@ export interface TagCount {
 
 export interface Category extends CategoryRef {
   description: string;
+  image_url: string | null;
   post_count: number;
 }
 
