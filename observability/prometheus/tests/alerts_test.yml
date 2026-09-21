@@ -1,0 +1,53 @@
+# promtool test rules tests/alerts_test.yml  (CI'da çalışır)
+rule_files:
+  - ../alerts.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Servis düşerse 1 dk sonra ServiceDown
+    interval: 1m
+    input_series:
+      - series: 'up{job="post-service",instance="post-service:8000"}'
+        values: '1 1 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: post-service, instance: "post-service:8000" }
+            exp_annotations:
+              summary: "post-service erişilemiyor"
+              description: "post-service:8000 1 dakikadır scrape edilemiyor."
+
+  - name: DLQ'ya mesaj düşerse alarm, ana kuyruk tetiklemez
+    interval: 1m
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages{queue="post-service.comment-events.dlq"}'
+        values: '0 1 1 1'
+      - series: 'rabbitmq_detailed_queue_messages{queue="post-service.comment-events"}'
+        values: '5 5 5 5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: DeadLetterQueueNotEmpty
+        exp_alerts:
+          - exp_labels: { severity: warning, queue: post-service.comment-events.dlq }
+            exp_annotations:
+              summary: "post-service.comment-events.dlq içinde işlenemeyen mesaj var"
+              description: "Poison mesajlar incelenmeli; düzeltilince shovel ile ana kuyruğa geri alınabilir."
+
+  - name: 5xx oranı %10 → HighErrorRate
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="comment-service",status="2xx"}'
+        values: '0+90x10'
+      - series: 'http_requests_total{job="comment-service",status="5xx"}'
+        values: '0+10x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HighErrorRate
+        exp_alerts:
+          - exp_labels: { severity: critical, job: comment-service }
+            exp_annotations:
+              summary: "comment-service 5xx oranı %5'in üzerinde"

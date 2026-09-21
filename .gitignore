@@ -1,0 +1,24 @@
+# Ortam / gizli değerler
+.env
+.env.*
+!.env.example
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+# Node
+node_modules/
+frontend/dist/
+frontend/coverage/
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+build/

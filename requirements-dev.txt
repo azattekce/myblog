@@ -1,0 +1,9 @@
+# Tüm servislerin test/lint araçları (CI ve yerel geliştirme)
+pytest==8.3.3
+pytest-cov==5.0.0
+httpx==0.27.2
+fakeredis==2.24.1
+ruff==0.6.9
+mypy==1.11.2
+bandit==1.7.10
+pip-audit==2.7.3

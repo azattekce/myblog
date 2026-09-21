@@ -1,0 +1,35 @@
+# Monorepo geneli araç yapılandırması (kodlama standartları tek yerde)
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = ["frontend", "**/node_modules"]
+
+[tool.ruff.lint]
+# E/W: pycodestyle, F: pyflakes, I: import sırası, B: bugbear, UP: modern sözdizimi,
+# S: güvenlik (bandit kuralları), SIM: sadeleştirme, N: isimlendirme
+select = ["E", "W", "F", "I", "B", "UP", "S", "SIM", "N"]
+ignore = [
+  "B008",   # FastAPI Depends() varsayılan argümanda kullanılır
+  "S608",   # SQL; tüm sorgular SQLAlchemy ile parametreli (ensure_database adı regex ile doğrulanır)
+  "N818",   # DDD ubiquitous language: BusinessRuleViolation bilinçli bir alan terimidir
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101", "S105", "S106", "S107"]   # testlerde assert ve sabit şifreler serbest
+
+[tool.ruff.lint.isort]
+known-first-party = ["devblog_common", "app"]
+
+[tool.bandit]
+exclude_dirs = ["tests", "frontend"]
+skips = ["B608"]  # yukarıdaki S608 ile aynı gerekçe
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+filterwarnings = ["ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+no_implicit_optional = true

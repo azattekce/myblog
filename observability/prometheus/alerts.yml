@@ -1,0 +1,68 @@
+groups:
+  - name: devblog-availability
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} erişilemiyor"
+          description: "{{ $labels.instance }} 1 dakikadır scrape edilemiyor."
+
+      - alert: HighErrorRate
+        expr: |
+          sum by (job) (rate(http_requests_total{status="5xx"}[5m]))
+            / clamp_min(sum by (job) (rate(http_requests_total[5m])), 1e-9) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} 5xx oranı %5'in üzerinde"
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bucket[5m]))) > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} p95 gecikme 500ms üzerinde"
+
+  - name: devblog-messaging
+    rules:
+      - alert: DeadLetterQueueNotEmpty
+        expr: max by (queue) (rabbitmq_detailed_queue_messages{queue=~".+\\.dlq"}) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.queue }} içinde işlenemeyen mesaj var"
+          description: "Poison mesajlar incelenmeli; düzeltilince shovel ile ana kuyruğa geri alınabilir."
+
+      - alert: QueueBacklogGrowing
+        expr: max by (queue) (rabbitmq_detailed_queue_messages{queue!~".+\\.dlq"}) > 100
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.queue }} kuyruğunda birikme var (tüketici yetişemiyor)"
+
+      - alert: ConsumerFailures
+        expr: sum by (queue, event_type) (increase(devblog_consumer_messages_total{result="failure"}[10m])) > 3
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.queue }} {{ $labels.event_type }} işlenirken tekrarlayan hata"
+
+  - name: devblog-security
+    rules:
+      - alert: LoginBruteForceSuspected
+        expr: sum(rate(http_requests_total{job="identity-service",handler="/api/identity/auth/login",status="4xx"}[5m])) > 1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Başarısız giriş denemeleri olağandışı yüksek"
+
+  - name: devblog-data
+    rules:
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / clamp_min(redis_memory_max_bytes, 1) > 0.9
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Redis bellek kullanımı %90 üzerinde (tahliye başlayabilir)"

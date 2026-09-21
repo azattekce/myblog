@@ -1,0 +1,17 @@
+# Ingress yalnızca gateway'e yönlendirir; tüm API yönlendirmesi Nginx gateway'dedir.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: devblog
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 2m
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: blog.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: gateway, port: { name: http } }

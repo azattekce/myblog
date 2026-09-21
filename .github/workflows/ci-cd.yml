@@ -1,0 +1,174 @@
+name: CI/CD
+
+on:
+  push: { branches: [main], tags: ["v*"] }
+  pull_request: { branches: [main] }
+
+permissions: { contents: read }
+
+concurrency: { group: "${{ github.workflow }}-${{ github.ref }}", cancel-in-progress: true }
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}/devblog
+
+jobs:
+  # 1) Gizli değer sızıntısı — her şeyden önce
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+
+  # 2) Backend: lint + SAST + bağımlılık açığı + test
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      redis: { image: "redis:7.4-alpine", ports: ["6379:6379"] }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - run: |
+          pip install -r requirements-dev.txt -r services/identity-service/requirements.txt
+          pip install -e libs/py-common
+      - name: Lint (ruff)
+        run: ruff check libs services && ruff format --check libs services
+      - name: SAST (bandit)
+        run: bandit -q -r libs/py-common/devblog_common services/*/app -c pyproject.toml
+      - name: Bağımlılık açıkları (pip-audit)
+        run: for s in services/*/requirements.txt; do pip-audit -r "$s" --strict; done
+      - name: Testler
+        run: |
+          (cd libs/py-common && pytest -q)
+          for s in identity-service post-service comment-service activity-worker; do
+            (cd services/$s && pytest -q --cov=app --cov-report=xml)
+          done
+
+  # 3) Frontend: typecheck + test + build + npm audit
+  frontend:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: frontend } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev --audit-level=high
+
+  # 4) Altyapı-as-kod doğrulaması
+  config-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config
+        run: docker compose config -q
+      - name: Prometheus kuralları + birim testleri
+        run: |
+          docker run --rm -v $PWD/observability/prometheus:/etc/prometheus -w /etc/prometheus --entrypoint promtool prom/prometheus:v2.54.1 check config prometheus.yml
+          docker run --rm -v $PWD/observability/prometheus:/etc/prometheus -w /etc/prometheus --entrypoint promtool prom/prometheus:v2.54.1 test rules tests/alerts_test.yml
+      - name: Kubernetes (kustomize + kubeconform)
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          for o in dev prod; do kubectl kustomize k8s/overlays/$o | ./kubeconform -strict -summary -ignore-missing-schemas; done
+      - name: IaC güvenlik taraması (Trivy config)
+        uses: aquasecurity/trivy-action@0.24.0
+        with: { scan-type: config, scan-ref: ., severity: "HIGH,CRITICAL", exit-code: "1" }
+
+  # 5) İmaj build + zafiyet taraması + SBOM + push (yalnızca main/tag)
+  images:
+    needs: [secrets-scan, backend, frontend, config-validate]
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write, id-token: write }
+    strategy:
+      matrix:
+        include:
+          - { name: identity-service, context: ., file: docker/python-service.Dockerfile, args: "SERVICE=identity-service" }
+          - { name: post-service,     context: ., file: docker/python-service.Dockerfile, args: "SERVICE=post-service" }
+          - { name: comment-service,  context: ., file: docker/python-service.Dockerfile, args: "SERVICE=comment-service" }
+          - { name: activity-worker,  context: ., file: docker/python-worker.Dockerfile,  args: "SERVICE=activity-worker" }
+          - { name: frontend,         context: frontend, file: frontend/Dockerfile, args: "RUN_TESTS=false" }
+          - { name: gateway,          context: nginx, file: nginx/Dockerfile, args: "" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ matrix.name }}
+          tags: |
+            type=sha,prefix=
+            type=semver,pattern={{version}}
+            type=ref,event=branch
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          build-args: ${{ matrix.args }}
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: İmaj zafiyet taraması (Trivy)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ matrix.name }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with: { image: "${{ env.REGISTRY }}/${{ matrix.name }}:${{ github.sha }}", format: cyclonedx-json }
+      - name: Push
+        if: github.event_name != 'pull_request'
+        run: docker push --all-tags ${{ env.REGISTRY }}/${{ matrix.name }}
+
+  # 6) Staging'e otomatik, production'a onaylı dağıtım (GitHub Environments)
+  deploy-staging:
+    if: github.ref == 'refs/heads/main'
+    needs: images
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+      - name: Deploy
+        env: { KUBECONFIG_DATA: "${{ secrets.KUBECONFIG_STAGING }}" }
+        run: |
+          echo "$KUBECONFIG_DATA" | base64 -d > kubeconfig && export KUBECONFIG=$PWD/kubeconfig
+          cd k8s/overlays/prod
+          for s in identity-service post-service comment-service activity-worker frontend gateway; do
+            kustomize edit set image devblog/$s=${{ env.REGISTRY }}/$s:${{ github.sha }}
+          done
+          kubectl apply -k . && kubectl -n devblog rollout status deploy --timeout=5m
+      - name: Smoke test
+        run: curl -fsS https://staging.blog.example.com/healthz && curl -fsS https://staging.blog.example.com/api/posts
+
+  deploy-production:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: images
+    runs-on: ubuntu-latest
+    environment: production        # manuel onay (required reviewers)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+      - name: Deploy (rolling, otomatik geri alma)
+        env: { KUBECONFIG_DATA: "${{ secrets.KUBECONFIG_PROD }}" }
+        run: |
+          echo "$KUBECONFIG_DATA" | base64 -d > kubeconfig && export KUBECONFIG=$PWD/kubeconfig
+          cd k8s/overlays/prod
+          for s in identity-service post-service comment-service activity-worker frontend gateway; do
+            kustomize edit set image devblog/$s=${{ env.REGISTRY }}/$s:${GITHUB_REF_NAME#v}
+          done
+          kubectl apply -k .
+          if ! kubectl -n devblog rollout status deploy --timeout=5m; then
+            for d in $(kubectl -n devblog get deploy -o name); do kubectl -n devblog rollout undo $d; done
+            exit 1
+          fi

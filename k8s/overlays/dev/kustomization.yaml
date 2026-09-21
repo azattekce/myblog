@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: devblog-dev
+resources:
+  - ../../base
+  - infra.yaml
+# Yalnızca DEV değerleri. Prod'da ExternalSecret kullanılır.
+secretGenerator:
+  - name: devblog-secrets
+    literals:
+      - DB_PASSWORD=DevBlog_Str0ng!Pass
+      - REDIS_PASSWORD=devblog-redis-pass
+      - REDIS_URL=redis://:devblog-redis-pass@redis:6379/0
+      - RABBITMQ_USER=devblog
+      - RABBITMQ_PASSWORD=devblog-rabbit-pass
+      - RABBITMQ_URL=amqp://devblog:devblog-rabbit-pass@rabbitmq:5672/%2F
+      - JWT_SECRET=dev-only-jwt-secret-change-me-min-32-chars!!
+      - ADMIN_PASSWORD=Admin123!
+      - IP_HASH_SALT=dev-only-ip-hash-salt
+configMapGenerator:
+  - name: devblog-config
+    behavior: merge
+    literals: [ENVIRONMENT=development, LOG_LEVEL=DEBUG, COOKIE_SECURE=false]
+patches:
+  - target: { kind: Namespace, name: devblog }
+    patch: |-
+      - { op: replace, path: /metadata/name, value: devblog-dev }
+      - { op: replace, path: /metadata/labels/pod-security.kubernetes.io~1enforce, value: baseline }
+  - target: { kind: HorizontalPodAutoscaler }
+    patch: |-
+      - { op: replace, path: /spec/minReplicas, value: 1 }
+  - target: { kind: Deployment }
+    patch: |-
+      - { op: replace, path: /spec/replicas, value: 1 }
+  - target: { kind: Ingress }
+    patch: |-
+      - { op: replace, path: /spec/rules/0/host, value: devblog.local }

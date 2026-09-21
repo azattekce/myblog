@@ -1,0 +1,306 @@
+# =============================================================================
+#  DevBlog — tek komutla tüm sistem:   docker compose up -d --build
+#
+#  Açılış sırası (depends_on + healthcheck ile garanti altında):
+#    1. mssql, redis, rabbitmq            (altyapı; healthy olana kadar beklenir)
+#    2. identity / post / comment servis  (kendi veritabanlarını oluşturur, /health/ready)
+#       activity-worker                    (broker'a bağlanır)
+#    3. frontend                           (derlenmiş SPA)
+#    4. gateway (Nginx)                    (tek giriş noktası :8080)
+#    +  prometheus, loki, promtail, grafana, exporter'lar (gözlemlenebilirlik)
+#
+#  Tüm değişkenlerin varsayılanı vardır; .env dosyası olmadan da çalışır.
+#  Üretimde .env.example'ı .env olarak kopyalayıp TÜM gizli değerleri değiştirin.
+# =============================================================================
+name: devblog
+
+x-logging: &default-logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+# Mikroservislerin ortak ortam değişkenleri (12-factor config)
+x-service-env: &service-env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DB_HOST: mssql
+  DB_PORT: "1433"
+  DB_USER: sa
+  DB_PASSWORD: ${MSSQL_SA_PASSWORD:-DevBlog_Str0ng!Pass}
+  REDIS_URL: redis://:${REDIS_PASSWORD:-devblog-redis-pass}@redis:6379/0
+  RABBITMQ_URL: amqp://${RABBITMQ_USER:-devblog}:${RABBITMQ_PASSWORD:-devblog-rabbit-pass}@rabbitmq:5672/%2F
+  JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-change-me-min-32-chars!!}
+  JWT_ISSUER: devblog-identity
+  JWT_AUDIENCE: devblog-api
+
+x-service-base: &service-base
+  restart: unless-stopped
+  logging: *default-logging
+  networks: [backend]
+  labels:
+    logging: promtail
+  depends_on:
+    mssql: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    rabbitmq: { condition: service_healthy }
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  tmpfs: ["/tmp"]
+  cap_drop: [ALL]
+  deploy:
+    resources:
+      limits: { cpus: "1.0", memory: 384M }
+
+services:
+  # ---------------------------------------------------------------------------
+  #  ALTYAPI
+  # ---------------------------------------------------------------------------
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64            # Apple Silicon'da Rosetta ile çalışır
+    container_name: devblog-mssql
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:-DevBlog_Str0ng!Pass}
+      MSSQL_MEMORY_LIMIT_MB: "2048"
+    volumes: [mssql-data:/var/opt/mssql]
+    ports: ["127.0.0.1:${MSSQL_PORT:-14330}:1433"]   # yalnızca yerel araçlar (SSMS/Azure Data Studio) için
+    networks: [backend]
+    labels: { logging: promtail }
+    healthcheck:
+      # 2022 imajının sürümüne göre sqlcmd iki farklı yolda olabilir
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -b -o /dev/null || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -b -o /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: devblog-redis
+    restart: unless-stopped
+    logging: *default-logging
+    # volatile-lru: yalnızca TTL'li anahtarlar tahliye edilir; cache namespace sürümleri korunur
+    command: >
+      redis-server --appendonly yes --appendfsync everysec
+      --requirepass ${REDIS_PASSWORD:-devblog-redis-pass}
+      --maxmemory 256mb --maxmemory-policy volatile-lru
+    volumes: [redis-data:/data]
+    networks: [backend]
+    labels: { logging: promtail }
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_PASSWORD:-devblog-redis-pass}\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy: { resources: { limits: { memory: 320M } } }
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: devblog-rabbitmq
+    restart: unless-stopped
+    logging: *default-logging
+    hostname: rabbitmq                  # quorum queue verisi node adına bağlıdır; sabit tutulmalı
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-devblog}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-devblog-rabbit-pass}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./observability/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    ports: ["127.0.0.1:${RABBITMQ_UI_PORT:-15672}:15672"]   # yönetim arayüzü (yalnızca yerel)
+    networks: [backend]
+    labels: { logging: promtail }
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    deploy: { resources: { limits: { memory: 512M } } }
+
+  # ---------------------------------------------------------------------------
+  #  MİKROSERVİSLER (Database-per-Service: IdentityDb / PostDb / CommentDb)
+  # ---------------------------------------------------------------------------
+  identity-service:
+    <<: *service-base
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+      args: { SERVICE: identity-service }
+    image: devblog/identity-service:${IMAGE_TAG:-local}
+    environment:
+      <<: *service-env
+      SERVICE_NAME: identity-service
+      DB_NAME: IdentityDb
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@devblog.local}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME:-Blog Yazarı}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Admin123!}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}      # HTTPS arkasında true olmalı
+
+  post-service:
+    <<: *service-base
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+      args: { SERVICE: post-service }
+    image: devblog/post-service:${IMAGE_TAG:-local}
+    environment:
+      <<: *service-env
+      SERVICE_NAME: post-service
+      DB_NAME: PostDb
+
+  comment-service:
+    <<: *service-base
+    build:
+      context: .
+      dockerfile: docker/python-service.Dockerfile
+      args: { SERVICE: comment-service }
+    image: devblog/comment-service:${IMAGE_TAG:-local}
+    environment:
+      <<: *service-env
+      SERVICE_NAME: comment-service
+      DB_NAME: CommentDb
+      IP_HASH_SALT: ${IP_HASH_SALT:-dev-only-ip-hash-salt}
+
+  activity-worker:
+    <<: *service-base
+    build:
+      context: .
+      dockerfile: docker/python-worker.Dockerfile
+      args: { SERVICE: activity-worker }
+    image: devblog/activity-worker:${IMAGE_TAG:-local}
+    environment:
+      <<: *service-env
+      SERVICE_NAME: activity-worker
+      METRICS_PORT: "9100"
+    depends_on:
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    deploy: { resources: { limits: { cpus: "0.5", memory: 192M } } }
+
+  # ---------------------------------------------------------------------------
+  #  SUNUM KATMANI
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      args: { RUN_TESTS: "${FRONTEND_RUN_TESTS:-true}" }
+    image: devblog/frontend:${IMAGE_TAG:-local}
+    container_name: devblog-frontend
+    restart: unless-stopped
+    logging: *default-logging
+    networks: [edge]
+    security_opt: ["no-new-privileges:true"]
+    deploy: { resources: { limits: { memory: 64M } } }
+
+  gateway:
+    build: ./nginx
+    image: devblog/gateway:${IMAGE_TAG:-local}
+    container_name: devblog-gateway
+    restart: unless-stopped
+    logging: *default-logging
+    ports: ["${GATEWAY_PORT:-8080}:8080"]
+    networks: [edge, backend]
+    labels: { logging: promtail }
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      identity-service: { condition: service_healthy }
+      post-service: { condition: service_healthy }
+      comment-service: { condition: service_healthy }
+      frontend: { condition: service_healthy }
+    deploy: { resources: { limits: { cpus: "0.5", memory: 128M } } }
+
+  # ---------------------------------------------------------------------------
+  #  GÖZLEMLENEBİLİRLİK (metrics → Prometheus, logs → Loki, görselleştirme → Grafana)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: devblog-prometheus
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./observability/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports: ["127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"]
+    networks: [backend]
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.62.0-alpine
+    container_name: devblog-redis-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-devblog-redis-pass}
+    networks: [backend]
+    depends_on: { redis: { condition: service_healthy } }
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.3.0
+    container_name: devblog-nginx-exporter
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["--nginx.scrape-uri=http://gateway:8081/stub_status"]
+    networks: [backend]
+    depends_on: { gateway: { condition: service_healthy } }
+
+  loki:
+    image: grafana/loki:3.1.1
+    container_name: devblog-loki
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ./observability/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    networks: [backend]
+
+  promtail:
+    image: grafana/promtail:3.1.1
+    container_name: devblog-promtail
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["-config.file=/etc/promtail/promtail-config.yml"]
+    volumes:
+      - ./observability/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # konteyner keşfi (salt okunur)
+    networks: [backend]
+    depends_on: [loki]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: devblog-grafana
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-devblog-grafana}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/devblog-overview.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports: ["127.0.0.1:${GRAFANA_PORT:-3000}:3000"]
+    networks: [backend]
+    depends_on: [prometheus, loki]
+
+networks:
+  edge:       # dış dünyaya bakan katman: gateway + frontend
+  backend:    # servisler, veri depoları, gözlemlenebilirlik
+
+volumes:
+  mssql-data:
+  redis-data:
+  rabbitmq-data:
+  prometheus-data:
+  loki-data:
+  grafana-data:

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "devblog-common"
+version = "1.0.0"
+description = "DevBlog shared kernel & building blocks (logging, messaging, persistence, security)"
+requires-python = ">=3.11"
+# Sürümler servislerin requirements.txt dosyalarında sabitlenir (tek kaynak: servis lock'u)
+dependencies = [
+  "pydantic>=2.9,<3",
+  "pydantic-settings>=2.5,<3",
+  "python-json-logger>=2.0,<3",
+  "redis>=5.0,<6",
+  "pika>=1.3,<2",
+  "sqlalchemy>=2.0,<2.1",
+  "prometheus-client>=0.21",
+]
+
+[project.optional-dependencies]
+web = ["fastapi>=0.115,<0.116", "prometheus-fastapi-instrumentator>=7.0,<8", "PyJWT>=2.9,<3"]
+mssql = ["pymssql>=2.3,<3"]
+
+[tool.setuptools.packages.find]
+include = ["devblog_common*"]

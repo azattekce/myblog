@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - external-secret.yaml
+# Prod'da veri katmanı yönetilen servislerdir (Azure SQL / ElastiCache / Amazon MQ vb.)
+configMapGenerator:
+  - name: devblog-config
+    behavior: merge
+    literals:
+      - DB_HOST=devblog-sql.database.example.com
+images:
+  - { name: devblog/identity-service, newName: ghcr.io/your-org/devblog/identity-service, newTag: "1.0.0" }
+  - { name: devblog/post-service,     newName: ghcr.io/your-org/devblog/post-service,     newTag: "1.0.0" }
+  - { name: devblog/comment-service,  newName: ghcr.io/your-org/devblog/comment-service,  newTag: "1.0.0" }
+  - { name: devblog/activity-worker,  newName: ghcr.io/your-org/devblog/activity-worker,  newTag: "1.0.0" }
+  - { name: devblog/frontend,         newName: ghcr.io/your-org/devblog/frontend,         newTag: "1.0.0" }
+  - { name: devblog/gateway,          newName: ghcr.io/your-org/devblog/gateway,          newTag: "1.0.0" }
+patches:
+  - target: { kind: Ingress, name: devblog }
+    patch: |-
+      - op: add
+        path: /metadata/annotations/cert-manager.io~1cluster-issuer
+        value: letsencrypt-prod
+      - op: add
+        path: /spec/tls
+        value: [{ hosts: [blog.example.com], secretName: devblog-tls }]
+  - target: { kind: HorizontalPodAutoscaler, name: post-service }
+    patch: |-
+      - { op: replace, path: /spec/maxReplicas, value: 10 }
