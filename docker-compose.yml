@@ -242,6 +242,20 @@ services:
     networks: [backend]
     depends_on: { redis: { condition: service_healthy } }
 
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: devblog-redis-commander
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:${REDIS_PASSWORD:-devblog-redis-pass}
+      HTTP_USER: ${REDIS_COMMANDER_USER:-admin}
+      HTTP_PASSWORD: ${REDIS_COMMANDER_PASSWORD:-admin}
+    ports: ["127.0.0.1:${REDIS_COMMANDER_PORT:-8081}:8081"]   # yönetim arayüzü (yalnızca yerel)
+    networks: [backend]
+    labels: { logging: promtail }
+    depends_on: { redis: { condition: service_healthy } }
+
   nginx-exporter:
     image: nginx/nginx-prometheus-exporter:1.3.0
     container_name: devblog-nginx-exporter

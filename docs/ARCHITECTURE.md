@@ -232,12 +232,59 @@ Politika: `volatile-lru` (yalnızca TTL'li anahtarlar tahliye edilir). Redis ç�
 
 ## 12. Docker Compose dizilimi
 
-```
-mssql ─┐
-redis ─┼─(healthy)─▶ identity / post / comment ─(healthy)─┐
-rabbitmq┘            activity-worker                      ├─▶ gateway :8080 ─▶ nginx-exporter
-                     frontend ─────────────(healthy)──────┘
-prometheus · loki · promtail · grafana · redis-exporter (paralel)
+```mermaid
+graph LR
+    subgraph data["Veri depoları"]
+        mssql[(mssql)]
+        redis[(redis)]
+        rabbitmq[(rabbitmq)]
+    end
+
+    subgraph services["Servisler — healthy bekler"]
+        identity[identity]
+        post[post]
+        comment[comment]
+        worker[activity-worker]
+    end
+
+    subgraph edgeNet["edge ağı"]
+        frontend[frontend]
+        gateway[gateway :8080]
+    end
+
+    nginxexp[nginx-exporter]
+
+    subgraph observability["Gözlem / yönetim — paralel"]
+        prometheus[prometheus]
+        loki[loki]
+        promtail[promtail]
+        grafana[grafana]
+        redisexp[redis-exporter]
+        rediscmd[redis-commander :8081]
+    end
+
+    mssql -->|healthy| identity
+    mssql -->|healthy| post
+    mssql -->|healthy| comment
+    redis -->|healthy| identity
+    redis -->|healthy| post
+    redis -->|healthy| comment
+    redis -->|healthy| worker
+    rabbitmq -->|healthy| identity
+    rabbitmq -->|healthy| post
+    rabbitmq -->|healthy| comment
+    rabbitmq -->|healthy| worker
+
+    identity -->|healthy| gateway
+    post -->|healthy| gateway
+    comment -->|healthy| gateway
+    frontend -->|healthy| gateway
+    gateway --> nginxexp
+
+    prometheus -.-> redisexp
+    prometheus -.-> nginxexp
+    redisexp -.-> redis
+    rediscmd -.-> redis
 ```
 
 - Ağlar: `edge` (gateway, frontend) ve `backend` (servisler, veri, gözlem). Veri depolarının portları yalnızca `127.0.0.1`'e açılır.

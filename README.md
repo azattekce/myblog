@@ -21,6 +21,7 @@ docker compose up -d --build        # ya da: make up
 | http://localhost:3000 | Grafana — `admin` / `devblog-grafana` |
 | http://localhost:9090 | Prometheus |
 | http://localhost:15672 | RabbitMQ yönetimi — `devblog` / `devblog-rabbit-pass` |
+| http://localhost:8081 | Redis Commander — `admin` / `admin` |
 | http://localhost:8080/api/posts/docs | OpenAPI (yalnızca development) |
 
 `.env` olmadan varsayılan geliştirme değerleriyle çalışır. Üretim için `cp .env.example .env` ve tüm gizli değerleri değiştirin.
