@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
 # ---- 1) build: bağımlılıklar kilit dosyasından, testler + tip kontrolü build'in parçası --
-FROM node:22-alpine AS build
+FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN npm config set strict-ssl false && npm ci --no-audit --no-fund
 COPY . .
 ARG RUN_TESTS=true
 RUN if [ "$RUN_TESTS" = "true" ]; then npm run typecheck && npm run test; fi
