@@ -228,6 +228,7 @@ Politika: `volatile-lru` (yalnızca TTL'li anahtarlar tahliye edilir). Redis ç�
 - **Altyapı:** nginx-exporter, redis-exporter, RabbitMQ (kuyruk bazında derinlik)
 - **Alarmlar** (`observability/prometheus/alerts.yml`, promtool birim testli): ServiceDown, HighErrorRate (%5 5xx), HighLatencyP95 (500 ms), DeadLetterQueueNotEmpty, QueueBacklogGrowing, ConsumerFailures, LoginBruteForceSuspected, RedisMemoryHigh
 - **Grafana:** "DevBlog — Sistem Genel Bakış" otomatik provision edilir (23 panel: RED, kuyruklar, cache hit oranı, hata logları).
+- **Grafana native alerting (`observability/grafana/provisioning/alerting/`):** `LoginBruteForceSuspectedUser` kuralı, `redis-exporter`'ın `REDIS_EXPORTER_CHECK_KEYS` ile expose ettiği `redis_key_value{key=~"auth:login_fail:.*"}` metriğini izler; bir kullanıcı için art arda **4** başarısız login olunca (kilitlenme eşiği 5'in bir altı, `login_max_attempts`) `email-security` contact point'i üzerinden Gmail SMTP ile e-posta gönderir. SMTP ayarları `.env`'de `GRAFANA_SMTP_USER`/`GRAFANA_SMTP_PASSWORD` (Gmail Uygulama Şifresi) ve `GRAFANA_ALERT_EMAIL_TO`.
 - **Health:** `/health/live` (süreç ayakta) ve `/health/ready` (DB + Redis). Broker kesintisi readiness'i düşürmez; outbox bekletir.
 
 ## 12. Docker Compose dizilimi

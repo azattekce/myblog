@@ -1,0 +1,39 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: devblog-security
+    folder: DevBlog Alerts
+    interval: 1m
+    rules:
+      - uid: login-brute-force-user
+        title: LoginBruteForceSuspectedUser
+        condition: C
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange: { from: 600, to: 0 }
+            model:
+              refId: A
+              expr: redis_key_value{key=~"auth:login_fail:.*"}
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [3] }
+                  operator: { type: and }
+                  query: { params: ["C"] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        noDataState: OK
+        execErrState: Error
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.key }} için art arda 4+ başarısız login denemesi"
+          description: "Redis anahtarı auth:login_fail:<kullanıcı> eşik değeri aştı; hesap 15 dakika kilitli olabilir."

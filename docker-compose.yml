@@ -239,6 +239,8 @@ services:
     environment:
       REDIS_ADDR: redis://redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:-devblog-redis-pass}
+      # Kullanıcı bazlı başarısız login sayaçlarını `redis_key_value{key="auth:login_fail:<kullanıcı>"}` olarak expose eder
+      REDIS_EXPORTER_CHECK_KEYS: "auth:login_fail:*"
     networks: [backend]
     depends_on: { redis: { condition: service_healthy } }
 
@@ -288,6 +290,15 @@ services:
     networks: [backend]
     depends_on: [loki]
 
+  mailpit:
+    image: axllent/mailpit:v1.20.2
+    container_name: devblog-mailpit
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"   # web arayüzü: gelen mailleri görüntüler
+    networks: [backend]
+
   grafana:
     image: grafana/grafana:11.2.0
     container_name: devblog-grafana
@@ -299,13 +310,23 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/devblog-overview.json
+      # E-posta alarmları — yerelde Mailpit (sahte SMTP, gerçek mail göndermez, http://localhost:8025 'te görüntülenir)
+      # Gerçek Gmail SMTP'ye geçmek için bu üç değeri GRAFANA_SMTP_HOST/USER/PASSWORD ile .env'de override edin.
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: ${GRAFANA_SMTP_HOST:-mailpit:1025}
+      GF_SMTP_USER: ${GRAFANA_SMTP_USER:-}
+      GF_SMTP_PASSWORD: ${GRAFANA_SMTP_PASSWORD:-}
+      GF_SMTP_FROM_ADDRESS: ${GRAFANA_SMTP_FROM_ADDRESS:-alerts@devblog.local}
+      GF_SMTP_FROM_NAME: "DevBlog Alerting"
+      GF_SMTP_SKIP_VERIFY: "true"
+      GRAFANA_ALERT_EMAIL_TO: ${GRAFANA_ALERT_EMAIL_TO:-security@example.com}
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports: ["127.0.0.1:${GRAFANA_PORT:-3000}:3000"]
     networks: [backend]
-    depends_on: [prometheus, loki]
+    depends_on: [prometheus, loki, mailpit]
 
 networks:
   edge:       # dış dünyaya bakan katman: gateway + frontend

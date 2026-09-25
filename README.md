@@ -26,6 +26,8 @@ docker compose up -d --build        # ya da: make up
 
 `.env` olmadan varsayılan geliştirme değerleriyle çalışır. Üretim için `cp .env.example .env` ve tüm gizli değerleri değiştirin.
 
+E-posta alarmları için `.env`'e Gmail bilgilerinizi girin (`GRAFANA_SMTP_USER`, `GRAFANA_SMTP_PASSWORD` — [Uygulama Şifresi](https://myaccount.google.com/apppasswords), `GRAFANA_ALERT_EMAIL_TO`). Detay: [docs/ARCHITECTURE.md § 11](docs/ARCHITECTURE.md#11-monitoring-prometheus--grafana--loki).
+
 > Apple Silicon: MSSQL imajı yalnızca amd64'tür; Docker Desktop'ta "Use Rosetta for x86/amd64 emulation" açık olmalı.
 
 ## Komutlar

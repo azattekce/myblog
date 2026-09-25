@@ -1,0 +1,11 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: email-security
+    receivers:
+      - uid: email-security-receiver
+        type: email
+        settings:
+          addresses: $__env{GRAFANA_ALERT_EMAIL_TO}
+          singleEmail: true
